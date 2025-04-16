@@ -2,6 +2,8 @@ import os
 import logging
 import requests
 import json
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 from dotenv import load_dotenv
@@ -48,6 +50,9 @@ CHAIN_MAPPING = {
     "solana": "sol",
     "sonic": "sonic"
 }
+
+# Create a thread pool for CPU-bound and blocking operations
+thread_pool = ThreadPoolExecutor(max_workers=10)
 
 async def post_init(application: Application) -> None:
     """Set up bot commands after initialization"""
@@ -123,7 +128,12 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 async def get_token_info(token_address):
     """Get token information from DexScreener API"""
     try:
-        response = requests.get(f"{DEXSCREENER_API}?q={token_address}")
+        # Run requests in thread pool to avoid blocking
+        loop = asyncio.get_event_loop()
+        response = await loop.run_in_executor(
+            thread_pool,
+            lambda: requests.get(f"{DEXSCREENER_API}?q={token_address}")
+        )
         response.raise_for_status()
         data = response.json()
         
@@ -207,6 +217,15 @@ def get_bubblemap_metadata(chain, token_address):
         logger.error(f"Error fetching bubble map metadata: {e}")
         return None, f"Error fetching bubble map metadata: {str(e)}"
 
+# Modified version to run in thread pool
+async def get_bubblemap_metadata_async(chain, token_address):
+    """Get bubble map metadata from Bubblemaps API asynchronously"""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(
+        thread_pool, 
+        lambda: get_bubblemap_metadata(chain, token_address)
+    )
+
 def format_token_info_message(token_info):
     """Format token information into a readable message"""
     message = f"*{token_info['name']} ({token_info['symbol']})*\n\n"
@@ -230,62 +249,8 @@ def format_token_info_message(token_info):
     if token_info['fdv'] != 'Unknown':
         message += f"🌐 *FDV:* ${format_number(token_info['fdv'])}\n"
     
-    # Fetch and add BubbleMap metadata if available
-    metadata, error = get_bubblemap_metadata(token_info['chain'], token_info['address'])
-    if metadata and not error:
-        message += "\n*BubbleMap Metrics:*\n"
-        if 'decentralisation_score' in metadata:
-            message += f"🏆 *Decentralization Score:* {metadata['decentralisation_score']:.2f}/100\n"
-        
-        if 'identified_supply' in metadata:
-            identified_supply = metadata['identified_supply']
-            if 'percent_in_cexs' in identified_supply:
-                message += f"📊 *% in CEXs:* {identified_supply['percent_in_cexs']:.2f}%\n"
-            if 'percent_in_contracts' in identified_supply:
-                message += f"📝 *% in Contracts:* {identified_supply['percent_in_contracts']:.2f}%\n"
-    
+    # Metadata will be added later asynchronously
     return message
-
-def format_number(number):
-    """Format large numbers to be more readable"""
-    if isinstance(number, str):
-        try:
-            number = float(number)
-        except:
-            return number
-            
-    if number is None:
-        return "Unknown"
-    if number >= 1_000_000_000_000:
-        return f"{number / 1_000_000_000_000:.2f}T"
-    elif number >= 1_000_000_000:
-        return f"{number / 1_000_000_000:.2f}B"
-    elif number >= 1_000_000:
-        return f"{number / 1_000_000:.2f}M"
-    elif number >= 1_000:
-        return f"{number / 1_000:.2f}K"
-    else:
-        return f"{number:.2f}"
-
-async def bubblemap_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Generate a bubble map visualization based on the given token address."""
-    # Extract arguments
-    args = context.args
-    
-    if len(args) == 0:
-        # No arguments provided, ask for token address
-        await update.message.reply_text(
-            'Please enter the token contract address:'
-        )
-        # Set a flag to indicate we're waiting for token address
-        context.user_data['waiting_for'] = 'token_address'
-        return
-    
-    # Get token address from args
-    token_address = args[0]
-    
-    # Process the token address
-    await process_token_address(update, context, token_address)
 
 async def process_token_address(update: Update, context: ContextTypes.DEFAULT_TYPE, token_address: str) -> None:
     """Process a token address by fetching info and generating bubblemap"""
@@ -299,6 +264,116 @@ async def process_token_address(update: Update, context: ContextTypes.DEFAULT_TY
     # Send status message
     status_message = await update.message.reply_text('Fetching token information...')
     
+    # Define a function to process the image generation in a separate thread
+    async def generate_bubblemap(token_info):
+        try:
+            # Get chain from token info
+            chain = token_info['chain']
+            
+            # Request URL
+            request_url = f"{API_URL}/bubble-map?token={token_address}&chain={chain}"
+            logger.info(f"Making request to: {request_url}")
+            
+            # Make request to API in a non-blocking way
+            loop = asyncio.get_event_loop()
+            response = await loop.run_in_executor(
+                thread_pool,
+                lambda: requests.get(request_url, stream=True)
+            )
+            response.raise_for_status()
+            
+            logger.info(f"API response received, status: {response.status_code}")
+            
+            # Get bubblemap metadata asynchronously
+            metadata, metadata_error = await get_bubblemap_metadata_async(chain, token_address)
+            
+            # Update token info message with metadata if available
+            token_info_message = format_token_info_message(token_info)
+            if metadata and not metadata_error:
+                token_info_message += "\n*BubbleMap Metrics:*\n"
+                if 'decentralisation_score' in metadata:
+                    token_info_message += f"🏆 *Decentralization Score:* {metadata['decentralisation_score']:.2f}/100\n"
+                
+                if 'identified_supply' in metadata:
+                    identified_supply = metadata['identified_supply']
+                    if 'percent_in_cexs' in identified_supply:
+                        token_info_message += f"📊 *% in CEXs:* {identified_supply['percent_in_cexs']:.2f}%\n"
+                    if 'percent_in_contracts' in identified_supply:
+                        token_info_message += f"📝 *% in Contracts:* {identified_supply['percent_in_contracts']:.2f}%\n"
+            
+            # Create button to link to BubbleMaps website
+            bubblemap_url = f"https://app.bubblemaps.io/{chain}/token/{token_address}"
+            keyboard = [[InlineKeyboardButton("🔍 Check on BubbleMaps", url=bubblemap_url)]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            # Send image to user with token info caption
+            await context.bot.send_photo(
+                chat_id=update.effective_chat.id,
+                photo=response.content,
+                caption=token_info_message,
+                parse_mode="Markdown",
+                reply_to_message_id=update.message.message_id,
+                reply_markup=reply_markup
+            )
+            
+            logger.info("Photo sent to user")
+            
+            # Delete status message
+            await context.bot.delete_message(
+                chat_id=update.effective_chat.id,
+                message_id=status_message.message_id
+            )
+            
+            return True
+            
+        except requests.RequestException as e:
+            logger.error(f"Error generating bubble map: {e}")
+            
+            # Extract error message from response
+            error_message = 'Error generating bubble map.\n\n'
+            
+            if hasattr(e, 'response') and e.response is not None:
+                try:
+                    error_json = e.response.json()
+                    if 'error' in error_json:
+                        # Make error messages more user-friendly
+                        if "Map not computed. API key required" in error_json['error']:
+                            error_message = f"No bubble map data available for this token.\n\n"
+                        elif "Token not found" in error_json['error']:
+                            error_message = f"Token not found on {chain}.\n\n"
+                        else:
+                            error_message = f"{error_json['error']}\n\n"
+                except (ValueError, KeyError):
+                    if e.response.text and len(e.response.text) < 200:
+                        error_message = f"{e.response.text}\n\n"
+            
+            # Get bubblemap metadata for token info message
+            metadata, metadata_error = await get_bubblemap_metadata_async(token_info['chain'], token_address)
+            
+            # Update token info message with metadata if available
+            token_info_message = format_token_info_message(token_info)
+            if metadata and not metadata_error:
+                token_info_message += "\n*BubbleMap Metrics:*\n"
+                if 'decentralisation_score' in metadata:
+                    token_info_message += f"🏆 *Decentralization Score:* {metadata['decentralisation_score']:.2f}/100\n"
+                
+                if 'identified_supply' in metadata:
+                    identified_supply = metadata['identified_supply']
+                    if 'percent_in_cexs' in identified_supply:
+                        token_info_message += f"📊 *% in CEXs:* {identified_supply['percent_in_cexs']:.2f}%\n"
+                    if 'percent_in_contracts' in identified_supply:
+                        token_info_message += f"📝 *% in Contracts:* {identified_supply['percent_in_contracts']:.2f}%\n"
+            
+            # If bubble map couldn't be generated, send token info
+            await context.bot.edit_message_text(
+                chat_id=update.effective_chat.id,
+                message_id=status_message.message_id,
+                text=f"{error_message}{token_info_message}",
+                parse_mode="Markdown"
+            )
+            
+            return False
+    
     # Get token information
     token_info, error = await get_token_info(token_address)
     
@@ -310,9 +385,6 @@ async def process_token_address(update: Update, context: ContextTypes.DEFAULT_TY
         )
         return
     
-    # Format token info message
-    token_info_message = format_token_info_message(token_info)
-    
     # Update status message to indicate bubble map generation
     await context.bot.edit_message_text(
         chat_id=update.effective_chat.id,
@@ -320,71 +392,8 @@ async def process_token_address(update: Update, context: ContextTypes.DEFAULT_TY
         text="Generating bubble map visualization..."
     )
     
-    try:
-        # Get chain from token info
-        chain = token_info['chain']
-        
-        # Request URL
-        request_url = f"{API_URL}/bubble-map?token={token_address}&chain={chain}"
-        logger.info(f"Making request to: {request_url}")
-        
-        # Make request to API
-        response = requests.get(request_url, stream=True)
-        response.raise_for_status()
-        
-        logger.info(f"API response received, status: {response.status_code}")
-        
-        # Create button to link to BubbleMaps website
-        bubblemap_url = f"https://app.bubblemaps.io/{chain}/token/{token_address}"
-        keyboard = [[InlineKeyboardButton("🔍 Check on BubbleMaps", url=bubblemap_url)]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        # Send image to user with token info caption
-        await context.bot.send_photo(
-            chat_id=update.effective_chat.id,
-            photo=response.content,
-            caption=token_info_message,
-            parse_mode="Markdown",
-            reply_to_message_id=update.message.message_id,
-            reply_markup=reply_markup
-        )
-        
-        logger.info("Photo sent to user")
-        
-        # Delete status message
-        await context.bot.delete_message(
-            chat_id=update.effective_chat.id,
-            message_id=status_message.message_id
-        )
-        
-    except requests.RequestException as e:
-        logger.error(f"Error generating bubble map: {e}")
-        
-        # Extract error message from response
-        error_message = 'Error generating bubble map.\n\n'
-        
-        if hasattr(e, 'response') and e.response is not None:
-            try:
-                error_json = e.response.json()
-                if 'error' in error_json:
-                    # Make error messages more user-friendly
-                    if "Map not computed. API key required" in error_json['error']:
-                        error_message = f"No bubble map data available for this token.\n\n"
-                    elif "Token not found" in error_json['error']:
-                        error_message = f"Token not found on {chain}.\n\n"
-                    else:
-                        error_message = f"{error_json['error']}\n\n"
-            except (ValueError, KeyError):
-                if e.response.text and len(e.response.text) < 200:
-                    error_message = f"{e.response.text}\n\n"
-        
-        # If bubble map couldn't be generated, send token info
-        await context.bot.edit_message_text(
-            chat_id=update.effective_chat.id,
-            message_id=status_message.message_id,
-            text=f"{error_message}{token_info_message}",
-            parse_mode="Markdown"
-        )
+    # Run bubble map generation in background, so it doesn't block other operations
+    asyncio.create_task(generate_bubblemap(token_info))
 
 # Add handler for text messages to capture token addresses
 async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
