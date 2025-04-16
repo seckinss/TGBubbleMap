@@ -1,0 +1,48 @@
+# Node.js
+node_modules/
+dist/
+# TypeScript
+*.tsbuildinfo
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+ENV/
+python_bot/venv/
+python_bot/.env
+python_bot/.vscode/
+
+# Environment files
+.env
+.env.local
+
+# IDE
+.vscode/
+.idea/
+.cursor/
+.cursorrules
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Logs
+logs
+*.log
+npm-debug.log*
+
+# Build files
+build/
+
+# Test files
+coverage/
+
+# Misc
+*.swp
+*.bak
+.tmp/
+temp/

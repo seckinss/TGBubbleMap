@@ -1,0 +1,22 @@
+services:
+  bubble-map-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: tg-bubblemap-service
+    ports:
+      - "3000:3000"
+    volumes:
+      # Mount the .env file for easier configuration
+      - ./.env:/app/.env:ro
+      - ./telegram-bot/.env:/app/telegram-bot/.env:ro
+    restart: unless-stopped
+    # Add a health check for container monitoring
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    environment:
+      - NODE_ENV=production 
