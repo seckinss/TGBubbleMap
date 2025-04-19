@@ -2,6 +2,8 @@
 
 A full-stack visualization service for blockchain token holder distribution with a Node.js API and Python Telegram bot.
 
+[Try the telegram bot](t.me/BubbleMapsTest_bot)
+
 ## Overview
 
 This project provides token holder visualizations through:
@@ -137,7 +139,8 @@ docker-compose up -d
 ├── Dockerfile             # Docker build configuration
 └── docker-entrypoint.sh   # Container startup script
 ```
-
+## Screenshots
+![Bubble Map Visualization](images/sample-message.png)
 ## License
 
 ISC License 

@@ -65,7 +65,7 @@ interface D3Link extends d3.SimulationLinkDatum<Node> {
  * @param {number} height - The height of the image
  * @returns {Promise<Buffer>} - PNG image buffer
  */
-function generateBubbleMap(mapData: MapData, width: number = 1200, height: number = 800): Promise<Buffer> {
+function generateBubbleMap(mapData: MapData, width: number = 1200, height: number = 800, simIterations: number = 500): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     try {
       // Create a virtual DOM for d3 to use
@@ -143,9 +143,6 @@ function generateBubbleMap(mapData: MapData, width: number = 1200, height: numbe
         .attr('height', height)
         .attr('fill', 'url(#background-gradient)');
       
-      // Generate a nice color palette based on the token name or address
-      const seed = mapData.full_name || mapData.token_address || 'default';
-      const baseHue = Math.abs(seed.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0) % 360);
       
       // Create node colors similar to reference image
       const getNodeColor = (node: Node, i: number): string => {
@@ -197,7 +194,7 @@ function generateBubbleMap(mapData: MapData, width: number = 1200, height: numbe
       }
       
       // Run the simulation with more iterations for better layout
-      for (let i = 0; i < 1000; ++i) simulation.tick();
+      for (let i = 0; i < simIterations; ++i) simulation.tick();
       
       // Create a container for visualization elements
       const container = svg.append('g')

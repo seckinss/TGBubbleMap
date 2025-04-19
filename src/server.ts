@@ -20,7 +20,7 @@ interface BubbleMapQueryParams {
 // Create Express app
 const app = express();
 const PORT = process.env.PORT || 3000;
-
+const simIterations = Number(process.env.SIM_ITERATIONS) || 500;
 // Middleware
 app.use(cors());
 app.use(express.json());
@@ -86,7 +86,8 @@ app.get('/bubble-map', async (req: Request, res: Response, next: NextFunction) =
     const imageBuffer = await generateBubbleMap(
       mapData, 
       width ? parseInt(width) : undefined,
-      height ? parseInt(height) : undefined
+      height ? parseInt(height) : undefined,
+      simIterations
     );
     
     // Send the image as response
